@@ -5,29 +5,43 @@
 
 #	This script use packages : LEAFF, INTERPRO, BLAST2GO (including blastp)
 
+# 	Version 1.02
+#	- Adding option to run on SLURM environment
+#	- Added option to use blastdb from user # Monday, 12 June 2017, 12:05PM
+# 	- # Tuesday, 22 January 2019, 12:07PM
+# 	- Increased interproscan memory from 8GB to 20GB
+# 	- Changed occurences of tgac to ei
+
+
 # 	Version 1.01
 #	- Added XML,GFF3 interproscan output formats
-#	- Changed the blast database location from this /tgac/references/databases/blast/nr to this /tgac/public/databases/blast/ncbi/nr
+#	- Changed the blast database location from this /ei/references/databases/blast/nr to this /ei/public/databases/blast/ncbi/nr
 
 # 	Version 1.0
 #	- First release
 
-# AUTHOR: Gemy George Kaithakottil (Gemy.Kaithakottil@tgac.ac.uk || gemygk@gmail.com)
+# AUTHOR: Gemy George Kaithakottil (Gemy.Kaithakottil@earlham.ac.uk || Gemy.Kaithakottil@gmail.com)
 
 
 use strict;
 use warnings;
 use File::Basename;
+use File::Path qw(make_path remove_tree);
 use Parallel::ForkManager;
-use threads;
 #use Getopt::Long qw(:config no_ignore_case pass_through); 
 use Getopt::Long; 
 use Cwd;
+use FindBin;
+use lib "$FindBin::RealBin/PerlLib";
+use HPC::GridRunner;
 
 my $help_flag;
 my $input;
+my $nr; # Monday, 12 June 2017, 12:05PM
+my $jobScheduler;
 my $num = 1000;
-my $queue = "Test128";
+my $queue = "ei-medium";
+my $prop = "/ei/software/testing/blast2go/2.5.0/src/b2g4pipe/b2gPipe.30Jan2017_database.properties";
 my $help;
 my $prog = basename($0);
 
@@ -35,23 +49,33 @@ my $usage = <<_EOUSAGE_;
 
 #########################################################################################################
 #
-#    annotF (v1.01) is a functional annotation pipeline for the annotation of query proteins
+#    AnnotF (v1.02) is a functional annotation pipeline for the annotation of query proteins
 #   
-#        Usage: $prog [options] --fasta <protein.fasta>
+#        Usage: $prog [options] --fasta <[protein.fa || /path/to/protein.fa]>
 #
 #	Required:
-#	--fasta <string>		fasta file properly formatted 
-#					(without any "dots" in sequences or "empty/blank lines")
+#	--fasta <string>            fasta file, properly formatted 
+#	                            (*IMPORTANT*:Please read fasta file requirements below)
+#	--nr <string>               provide path to blast nr database
+#	                            /path/to/blast/nr
+#	                            Eg: /ei/public/databases/blast/ncbi/nr_20170116/nr
 #
 #	General Options:
-#	--chunk_size <int>		required chunk size (fasta per file) for faster execution of jobs
-#					ideal chunk size would be 1000
-#					(default: $num fasta sequences per file)
-#	--queue <string>		queue to submit jobs (default: Test128)
-#	--help				print this option menu and quit
+#	--chunk_size <int>          required chunk size (fasta per chunk) for faster execution of jobs
+#	                            DO NOT exceed 1000 fasta sequences per chunk or fasta file
+#	                            (Default: $num, fasta sequences per chunked fasta file)
+#	--queue <string>            queue to submit jobs
+#	                            (Default: ei-medium, for SLURM)
+#	--prop <property-file>      file containing the Blast2GO application settings 
+#	                            (Default: /ei/software/testing/blast2go/2.5.0/src/b2g4pipe/b2gPipe.30Jan2017_database.properties)
+#	--help                      print this option menu and quit
 #							
 #    NOTE: 
-#    Only fasta header should be present for fasta sequence and no pipe ("|") allowed in fasta header
+#    *Fasta file requirements:
+#    - There should not be any "dots" in sequences or "empty/blank lines" in the fasta file
+#    - Only fasta header should be present in fasta sequence and no pipe ("|") character is
+#      allowed in fasta header name as it will cause issues with InterproScan. 
+#      For example, a fasta sequence name header ">gb|xyz|abc" is NOT allowed, since it has pipe character.
 #
 #    Example of a peptide fasta file:
 #    >A2YIW7
@@ -63,7 +87,11 @@ my $usage = <<_EOUSAGE_;
 #    VRKQLAIAADTEITGESKFAALGADSLDTVEIVMGLEEEFGISVEEESAQTIATVQDAAD
 #    LIEKLLA
 #
-# Contact : Gemy George Kaithakottil (gemy.kaithakottil\@tgac.ac.uk || gemygk\@gmail.com)
+#    Example SLURM command:
+#    sbatch -p ei-medium -J annotF -o out_annotF.%j.log -c 1 --mem 5G --wrap "source annotF-1.02 && annotF --queue ei-medium --fasta test_proteins.fasta --nr /ei/public/databases/blast/ncbi/nr_20170116/nr"
+#
+#
+# Contact : Gemy George Kaithakottil (Gemy.Kaithakottil\@earlham.ac.uk || Gemy.Kaithakottil\@gmail.com)
 #########################################################################################################
 _EOUSAGE_
     ;
@@ -73,8 +101,11 @@ unless (@ARGV) {
 }
 
 &GetOptions ( 'fasta=s' => \$input,
+			  # 'jobScheduler=s' => \$jobScheduler,
+			  'nr=s' => \$nr,
               'chunk_size=i' => \$num,
               'queue=s' => \$queue,
+              'prop=s' => \$prop,
               'h|help' => \$help,
 
 );
@@ -85,63 +116,120 @@ if ($help) {
 }
 
 if (@ARGV) {
-    die "Error, do not understand options: @ARGV\n";
+    die "# ERROR, do not understand options: @ARGV\n";
 }
 
 unless ($input) {
-    die "ERROR: No input fasta provided.\n$usage\n";
+    die "# ERROR: No input fasta provided.\n$usage\n";
 }
 
 unless(-e $input) {
-		print "ERROR: Cannot open $input\n$!\n";
-		exit;
-	}
+	die "# ERROR: Cannot open the input file - $input\n$!\n";
+}
 
-# v1.01 update
 # Link the protein file to the current location
 my $input_basename = basename($input);
 qx(ln -s $input .) unless (-e $input_basename);
 $input = $input_basename;
 
-#unless ($queue) {
-#    die "$usage\n";
-#}
 
-	
-#my $log;
-#if (-e "$input.log") { print "Removing the log file already present $input.log\n";`rm $input.log`; }
-#open $log, ">>" . "$input.log";
+unless ($nr) {
+    die "# ERROR: No path to nr database provided.\n$usage\n";
+}
 
-# Get working directory location
-chomp(my $pwd=`pwd`);
+# This is going to be the file prefix used at any stage of the pipeline
+my $prefix = "$input.chunk";
+
+# Get current working directory
+my $pwd = getcwd;
 
 #To pass number of chunks created in leaff step;
-my $chunk;
-my $prefix;
+my $chunk=0;
 
 # CONSTANTS
-# Number of jobs to be executed at a time -- default 500 jobs
+# Number of jobs to be executed at a time -- default 1000 jobs
 my $THREADS_NUM = 1000; # http://bickson.blogspot.co.uk/2011/12/multicore-parser-part-2-parallel-perl.html
 
 # Print version status:
-print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
-print "%%          annotF - v1.01 (Release:05-Nov-2015)        %%\n";
-print "%%   Gemy.Kaithakottil\@tgac.ac.uk || gemygk\@gmail.com   %%\n";
-print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
+print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
+print "%%                            annotF - v1.02                            %%\n";
+print "%%   Gemy.Kaithakottil\@earlham.ac.uk || Gemy.Kaithakottil\@gmail.com     %%\n";
+print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
 
 # Create directories
-system("mkdir -p leaff interproscan blastpForBlast2go blast2go temp_folder");
+print "\n";
+print "#######################################\n";
+print "##    Creating necessary directories..\n";
+print "#######################################\n";
+my $leaff_dir = "$pwd/1.leaff";
+my $interproscan_dir = "$pwd/2.interproscan";
+my $blastp_dir = "$pwd/3.blastp";
+my $blast2go_dir = "$pwd/4.blast2go";
+my $temp_folder_dir = "$pwd/5.temp_folder";
+make_path($leaff_dir, $interproscan_dir, $blastp_dir, $blast2go_dir, $temp_folder_dir, {verbose => 1});
+
+
+# DEFAULT BLAST DB LOCATION
+# my $blast_DB="/ei/public/databases/blast/ncbi/nr";
+my $blast_DB = $nr; # Monday, 12 June 2017, 12:04PM
+
+# create configuration file as required
+sub write_conf {
+	my $filename = shift;
+	my $queue = shift;
+	my $ncpus = shift;
+	my $mem = shift;
+	my $cmds_per_node = shift;
+	open(my $fh, '>', $filename) or die "Could not write file '$filename' $!\n";
+	print $fh "# grid type\n";
+	print $fh "grid=SLURM\n";
+	print $fh "# template for a grid submission\n";
+	print $fh "cmd=sbatch -p $queue -c $ncpus --mem=$mem\n";
+	print $fh "# number of grid submissions to be maintained at steady state by the submission system\n";
+	print $fh "max_nodes=1000\n";
+	print $fh "# number of commands that are batched into a single grid submission job.\n";
+	print $fh "cmds_per_node=$cmds_per_node\n";  # need to change it later
+	close $fh;
+}
+
+# write output files locally
+# 	- input : location with prefix, with wild characters
+# 	- output : output filename with absolute path
+sub write_files {
+	my $input_files = shift;
+	my $output_filename = shift;
+
+	chomp(my @files= qx(ls $input_files));
+	open OUTPUT_FILE, ">", $output_filename or die "# Fatal error: Cannot write file '$output_filename'. $!\n";
+	foreach my $each_file (@files) {
+		if (open my $in, '<', $each_file) {
+			while (my $line = <$in>) {
+		    	print OUTPUT_FILE $line;
+		}
+		close $in;
+		} else {
+			warn "Could not open '$each_file' for reading\n";
+		}
+	}
+	close(OUTPUT_FILE);
+}
+
 
 #########################
 ##LEAFF##################
 #########################
 sub leaff() {
 	#print $log "Inside leaff\n";
-	my $file = $input;
-	$prefix = "$input.pre";  # symbol $prefix used for blastp step
+	my $file = shift;
+	my $conf = "$leaff_dir/SLURM.conf";
+	my $ncpus = 1;
+	my $mem = 2048;
+	my $cmds_per_node = 1;
+	write_conf($conf,$queue,$ncpus,$mem,$cmds_per_node);
+
 	my $count=0;
 	my $lines;
-	$lines = `grep -c '^>' $file`; # MAIN
+	$lines = qx(grep -c '^>' $file); # MAIN
 	chomp($lines);
 	my $total = ($lines/$num);
 	my @commands=();
@@ -150,15 +238,14 @@ sub leaff() {
 		$count++;
 		my $j=$i+$num; # like 9,19,29...
 		if ($j <= $lines && ($j != $lines)) {
-		#if ($j <= $lines) {
 			#print $log "Starting ",($i+1),"-",($j+1)," End\n";
-			push (@commands, "bsub -q $queue -K -o $pwd/leaff/out_leaff_$count -J leaff_$count \"source leaff-13_12_2012;leaff -f $file -S $i $j > $pwd/leaff/$prefix-$count.txt\"");
+			push (@commands, "leaff -f $file -S $i $j > $leaff_dir/$prefix-$count.txt");
 			$i=$j;
 		}
 		else {
 			$j = ($lines-1);
 			#print $log "Starting ",($i+1),"-",($j+1)," End**Last File**\n";
-			push (@commands, "bsub -q $queue -K -o $pwd/leaff/out_leaff_$count -J leaff_$count \"source leaff-13_12_2012;leaff -f $file -S $i $j > $pwd/leaff/$prefix-$count.txt\"");
+			push (@commands, "leaff -f $file -S $i $j > $leaff_dir/$prefix-$count.txt");
 			last;
 		}
 	}
@@ -166,86 +253,118 @@ sub leaff() {
 	
 	#http://stackoverflow.com/questions/3991143/how-can-i-pass-two-arrays-and-a-string-to-a-perl-subroutine
 	#pass array as reference
-	&process_cmd(\@commands,"LEAFF");
-	#print $log "leaff process completed!!\n";
-	#print "Chunking fasta executed!!\n";
+	&process_cmd(\@commands,"LEAFF",$conf);
 } #end of subroutine
 
 #########################
 ###Interproscan_rc2######
 #########################
 
-sub interproscanRC2() {
-	chomp(my @files=`ls $pwd/leaff/*.txt`); # read from leaff directory
+sub interproscan() {
+
+	# write configuration file 
+	my $file = $input;
+	my $conf = "$interproscan_dir/SLURM.conf";
+	my $ncpus = 6;
+	# my $mem = 8192;
+	my $mem = 20480;
+	my $cmds_per_node = 1;
+	write_conf($conf,$queue,$ncpus,$mem,$cmds_per_node);
+
+	chomp(my @files= qx(ls $leaff_dir/$prefix*.txt)); # read from leaff directory
+
 	my $count = 1;
 	my @commands=();
-	foreach (@files) {
-		my @input=split (/\//);
-		# Actual way to run the script
-		push(@commands,"bsub -q $queue -K -J iprscan5_$count -o $pwd/interproscan/out_interproscan_rc2_$input[$#input]-$count -n 8 -R \"span[ptile=8] rusage[mem=4096]\" \"source interproscan-5;interproscan.sh -i $_ -b $pwd/interproscan/$input[$#input]-interproscanRC2 -dp -goterms -iprlookup -pa -f TSV,XML,GFF3\""); # v1.01 udpate
-		# For the above one to be used I should fix phobius.pl for phobius -- done Fixed!
-		# ncoils for coils -- done Fixed!
-		# blastall for PIRSF, Panther, ProDom -- done Fixed!
-		
-		# So modified to test the installation 
-		#push(@commands,"bsub -q $queue -K -J iprscan5_$count -o $pwd/interproscan/out_interproscan_rc2_$input[$#input]-$count -R \"rusage[mem=4096]\" \"source interproscan-5;interproscan.sh -appl TIGRFAM,PrositeProfiles,PrositePatterns,PRINTS,SuperFamily,Gene3d,PfamA,TMHMM,HAMAP -i $_ -b $pwd/interproscan/$input[$#input]-interproscanRC2 -dp -goterms -iprlookup -pa -f TSV\"");
-		# for testing only
-		#push(@commands,"bsub -q $queue -K -J iprscan5_$count -o $pwd/interproscan/out_interproscan_rc2_$input[$#input]-$count -R \"rusage[mem=4096]\" \"source interproscan-5;interproscan.sh -appl Coils -i $_ -b $pwd/interproscan/$input[$#input]-interproscanRC2 -dp -goterms -iprlookup -pa -f TSV\" && echo INTERPROSCAN for chunk $_ done");
+	foreach my $filepath (@files) {
+		my $filebase = basename ($filepath);
+		push(@commands,"interproscan.sh -i $filepath -b $interproscan_dir/$filebase-iprscan5 -dp -goterms -iprlookup -pa -f TSV,XML,GFF3"); # v1.02 udpate
+	}
+	&process_cmd(\@commands,"INTERPROSCAN",$conf);
+
+	# RUN LOCALLY
+	print "#INFO: Concatenate interproscan files\n";
+
+	# write TSV files
+	write_files("$interproscan_dir/$prefix*.tsv","$pwd/$input.interproscan.tsv");
+
+	system("cp -a $pwd/$input.interproscan.tsv $temp_folder_dir/$input.interproscan.tsv.bkp && cat $temp_folder_dir/$input.interproscan.tsv.bkp | sort -k1,1 | sed '\$ a END' > $temp_folder_dir/$input.interproscan.tsv; rm $temp_folder_dir/$input.interproscan.tsv.bkp");
+
+	# write XML files
+	write_files("$interproscan_dir/$prefix*.xml","$pwd/$input.interproscan.xml");
+
+	# write GFF3 files
+	write_files("$interproscan_dir/$prefix*.gff3","$pwd/$input.interproscan.gff3");
+
+} #end of subroutine
+
+#########################
+###Blastp################
+#########################
+
+sub blastp() {
+
+	# write configuration file 
+	my $file = $input;
+	my $conf = "$blastp_dir/SLURM.conf";
+	my $ncpus = 4;
+	my $mem = 40960;
+	my $cmds_per_node = 1;
+	write_conf($conf,$queue,$ncpus,$mem,$cmds_per_node);
+
+	chomp(my @files=qx(ls $leaff_dir/$prefix*.txt)); # read from leaff directory);
+	my $count = 1;
+	my @commands=();
+
+	foreach my $filepath (@files) {
+		my $filebase = basename ($filepath);
+		# For input peptides only "blastp"
+		push(@commands,"blastall -p blastp -a $ncpus -d $blast_DB -i $filepath -e 1e-4 -b 50 -v 50 -m 7 -o $blastp_dir/$filebase.blastp.xml");
 		$count++;
 	}
-	&process_cmd(\@commands,"INTERPROSCAN");
+	&process_cmd(\@commands,"BLASTP",$conf);
+	#print "Blastp jobs for Blast2go executed!!\n";
 
-	# Now concatenate the results 
-	# add line to end of the file (http://www.thegeekstuff.com/2009/11/unix-sed-tutorial-append-insert-replace-and-count-file-lines/)
-	@commands=(); # empty the interproscan commands
-	# v1.01 update
-	push(@commands,"bsub -q $queue -K -J cat_interpro_tsv -o $pwd/interproscan/out_cat_interproscan_tsv \"cat $pwd/interproscan/$input*-interproscanRC2.tsv | sort -k1,1 | sed '\$ a END' > $pwd/combined_$input.iprscan.tsv\"");
-	push(@commands,"bsub -q $queue -K -J cat_interpro_xml -o $pwd/interproscan/out_cat_interproscan_xml \"cat $pwd/interproscan/$input*-interproscanRC2.xml > $pwd/combined_$input.iprscan.xml\"");
-	push(@commands,"bsub -q $queue -K -J cat_interpro_gff3 -o $pwd/interproscan/out_cat_interproscan_gff3 \"cat $pwd/interproscan/$input*-interproscanRC2.gff3 > $pwd/combined_$input.iprscan.gff3\"");
+	# Now concatenate the results
+	@commands=(); # empty the blastp commands
 
-	&process_cmd(\@commands,"INTERPROSCAN");
-	#print "Interproscan jobs executed!!\n";
-	return 1;
+	# RUN LOCALLY
+	print "#INFO: Concatenate blastp files\n";
+
+	# write TSV files
+	write_files("$blastp_dir/$prefix*.blastp.xml","$pwd/$input.blastp.xml");
 } #end of subroutine
+
+
 
 #########################
 ###Blast2GO##############
 #########################
 
 sub blast2go() {
-	chomp(my @files=`ls $pwd/leaff/*.txt`);
-	my $count = 1;
-	my @commands=();
-	foreach (@files) { # if given nucleotide change blastp to blastx
-		my @input=split (/\//);
-		
-		# /tgac/references/databases/blast/nr -- new
-		# /data/references/databases/blast/nr -- old
-		
-		# For input peptides only "blastp"
-		push(@commands,"bsub -q $queue -K -J Blast2GOblastp_$count -o $pwd/blastpForBlast2go/out_blastpForBlast2GO_$input[$#input]-$count -n 4 -R \"span[ptile=4] rusage[mem=5120]\" \"source jre-7.11;source blast-2.2.22;blastall -p blastp -a 4 -d /tgac/public/databases/blast/ncbi/nr -i $_ -e 1e-4 -b 50 -v 50 -m 7 -o $pwd/blastpForBlast2go/$input[$#input]-vs-nr_blastpForBlast2GO.xml\"");	# v1.01 update to blast db location
-		$count++;
-	}
-	&process_cmd(\@commands,"BlastpForBlast2GO");
-	#print "Blastp jobs for Blast2go executed!!\n";
 
-	# Now concatenate the results
-	@commands=(); # empty the blastp commands
-	push(@commands,"bsub -q $queue -K -J cat_Blast2GOblastp -o $pwd/blastpForBlast2go/out_cat_blastpForBlast2GO \"cat $pwd/blastpForBlast2go/*blastpForBlast2GO.xml > $pwd/combined_$input.blastpForBlast2GO.xml\"");
-	&process_cmd(\@commands,"BlastpForBlast2GO");
-
-	@commands=(); # empty the cat commands
-	if(!-e "$pwd/combined_$input.blastpForBlast2GO.xml"){
-		die "Exiting .. blastpForBlast2GO didn't generate any output for Blast2GO\n";
+	# make sure that the blastp output file is present
+	if(!-e "$pwd/$input.blastp.xml"){
+		die "Exiting .. blastp results for Blast2GO does not exist. Try rerunning annotF..\n";
 		exit;
 	}
 	else {
-		push(@commands,"bsub -q $queue -K -o $pwd/blast2go/out_blast2go -J blast2go -n 8 -R \"span[ptile=8] rusage[mem=10240]\" \"source x11-7.0.0.22;source blast2go-2.5.0;java -cp /tgac/software/testing/blast2go/2.5.0/src/b2g4pipe/*:/tgac/software/testing/blast2go/2.5.0/src/b2g4pipe/ext/*: es.blast2go.prog.B2GAnnotPipe -in $pwd/combined_$input.blastpForBlast2GO.xml -out $pwd/blast2go/combined_$input.blastpForBlast2GO.xml.blast2go -prop /tgac/software/testing/blast2go/2.5.0/src/b2g4pipe/b2gPipe.properties -v -annot -annex -goslim -dat -img\"");
-		&process_cmd(\@commands,"BLAST2GO");
+		# write configuration file 
+		my $file = $input;
+		my $conf = "$blast2go_dir/SLURM.conf";
+		my $ncpus = 8;
+		my $mem = 20480;
+		my $cmds_per_node = 1;
+		write_conf($conf,$queue,$ncpus,$mem,$cmds_per_node);
+		my @commands=();
+		my $java_Xmx=$mem . "m";
+
+		die "# Fatal error: Cannot file $prop file. Please provide correct link to properties file and re-run\n" unless (-e $prop);
+
+		push(@commands,"source blast2go-2.5.0; unset DISPLAY; cp -a $prop $blast2go_dir/b2gPipe.properties; java -Xmx$java_Xmx -cp /ei/software/testing/blast2go/2.5.0/src/b2g4pipe/*:/ei/software/testing/blast2go/2.5.0/src/b2g4pipe/ext/*: es.blast2go.prog.B2GAnnotPipe -in $pwd/$input.blastp.xml -out $blast2go_dir/$input.blast2go -prop $blast2go_dir/b2gPipe.properties -v -annot -annex -goslim -dat -img");
+		&process_cmd(\@commands,"BLAST2GO",$conf);
 	}
-	#print "Blast2go job executed!!\n";
-	return 1;
 } #end of subroutine
+
 
 #########################
 ###PARSE#################
@@ -254,40 +373,19 @@ sub parse {
 
 	my @commands=();
 
-	# Clean up first
-	push(@commands, "cat $pwd/leaff/out_leaff_* > $pwd/leaff/out_leaff;rm $pwd/leaff/out_leaff_*;mv $pwd/error.log $pwd/blastpForBlast2go/blastp_error.log;cat $pwd/blastpForBlast2go/out_blastpForBlast2GO_* > $pwd/blastpForBlast2go/out_blastpForBlast2GO;rm $pwd/blastpForBlast2go/out_blastpForBlast2GO_*;cat $pwd/interproscan/out_interproscan_rc2_* > $pwd/interproscan/out_interproscan; rm $pwd/interproscan/out_interproscan_rc2_*;mv $pwd/temp $pwd/interproscan_temp ");
-	&process_cmd(\@commands,"Cleanup");
+	# write configuration file 
+	my $file = $input;
+	my $conf = "$temp_folder_dir/SLURM.conf";
+	my $ncpus = 2;
+	my $mem = 5120;
+	my $cmds_per_node = 1;
+	write_conf($conf,$queue,$ncpus,$mem,$cmds_per_node);
 
 	#interproscan	
 	@commands=();
-	push(@commands, "bsub -q $queue -K -o $pwd/temp_folder/out_parse -J parse \"parse_interproscan_tsv.pl $pwd/combined_$input.iprscan.tsv > $pwd/temp_folder/combined_$input.iprscan.tsv.out\"");
-	&process_cmd(\@commands,"INTERPROSCAN");
+	push(@commands, "parse_interproscan_tsv.pl $temp_folder_dir/$input.interproscan.tsv > $temp_folder_dir/$input.interproscan.tsv.out && parse_blast2go_annot.pl $blast2go_dir/$input.blast2go.annot > $temp_folder_dir/$input.blast2go.annot.out && cat $temp_folder_dir/$input.blast2go.annot.out $temp_folder_dir/$input.interproscan.tsv.out | sort -k1,1 > $temp_folder_dir/$input.blast2go_interproscan.results.txt && parse_combined_interproscan_blast2go.pl $temp_folder_dir/$input.blast2go_interproscan.results.txt > $temp_folder_dir/$input.blast2go_interproscan.results.txt.out && awk '/^>/ {split(\$0,a,\" \");print a[1]\"\\t\"a[1];}' $input | sed 's/>//g' > $temp_folder_dir/$input-contigID.txt && parse_compareIDs_input_interproscan_blast2go.pl $temp_folder_dir/$input-contigID.txt $temp_folder_dir/$input.blast2go_interproscan.results.txt.out | sort -k1,1V > $pwd/$input.annotF-annotation.tsv && sed -i \'1i #ID\\tBlast2GO_GO_term\\tBlast2GO_EC_Number\\tBlast2GO_GO_Description\\tInterproscan_IPR\\tInterproscan_IPR_Description\\tInterproscan_GO_term\\tInterproscan_EC_Number\\tInterproscan_Pathways\' $pwd/$input.annotF-annotation.tsv");
+	&process_cmd(\@commands,"Generate_output_files",$conf);
 
-	#blast2go
-	@commands=();
-	push(@commands, "bsub -q $queue -K -o $pwd/temp_folder/out_parse -J parse \"parse_blast2go_annot.pl $pwd/blast2go/combined_$input.blastpForBlast2GO.xml.blast2go.annot > $pwd/temp_folder/combined_$input.blastpForBlast2GO.xml.blast2go.annot.out\"");
-	&process_cmd(\@commands,"BLAST2GO");
-	
-	#combine results
-	@commands=();
-	push(@commands, "bsub -q $queue -K -o $pwd/temp_folder/out_parse -J parse \"cat $pwd/temp_folder/combined_$input.blastpForBlast2GO.xml.blast2go.annot.out $pwd/temp_folder/combined_$input.iprscan.tsv.out | sort -k1,1 > $pwd/temp_folder/combined_Blast2GO_interproscan.results.txt\"");
-	&process_cmd(\@commands,"Parse");
-	
-	@commands=();
-	push(@commands, "bsub -q $queue -K -o $pwd/temp_folder/out_parse -J parse \"parse_combined_interproscan_blast2go.pl $pwd/temp_folder/combined_Blast2GO_interproscan.results.txt > $pwd/temp_folder/combined_Blast2GO_interproscan.results.txt.out\"");
-	&process_cmd(\@commands,"Parse");
-
-	@commands=();
-	push(@commands, "bsub -q $queue -K -o $pwd/temp_folder/out_parse -J parse \"grep '^>' $pwd/$input | sed 's/^>//g' | awk '{print \\\$1\\\"\\t\\\"\\\$1}' > $pwd/temp_folder/$input-contigID.txt\"");
-	&process_cmd(\@commands,"Parse");
-
-	@commands=();
-	push(@commands, "bsub -q $queue -K -o $pwd/temp_folder/out_parse -J parse \"parse_compareIDs_input_interproscan_blast2go.pl $pwd/temp_folder/$input-contigID.txt $pwd/temp_folder/combined_Blast2GO_interproscan.results.txt.out | sort -k1,1 > $pwd/$input-annotation.tsv\"");
-	&process_cmd(\@commands,"Parse");
-
-	@commands=();
-	push(@commands, "bsub -q $queue -K -o $pwd/temp_folder/out_parse -J parse \"sed -i \'1i #ID\\tBlast2GO_GO_term\\tBlast2GO_EC_Number\\tBlast2GO_GO_Description\\tInterproscan_IPR\\tInterproscan_IPR_Description\\tInterproscan_GO_term\\tInterproscan_EC_Number\\tInterproscan_Pathways\' $pwd/$input-annotation.tsv\"");
-	&process_cmd(\@commands,"Parse");
 }
 
 #########################
@@ -295,7 +393,7 @@ sub parse {
 #########################
 
 sub process_cmd {
-	my ($commands,$msg) = @_;
+	my ($commands,$msg,$conf) = @_;
 	
 	if ($msg) {
         print "\n";
@@ -304,15 +402,11 @@ sub process_cmd {
         print "#######################################\n";
     }
 	my $start_time = time();
-	my @threads;
-	foreach my $cmd (@$commands) {
-		#my $t = threads->new('system_call',$cmd);
-		my $t = threads->new('system_call',$cmd,$msg);
-		push(@threads,$t);
-	}
-	foreach (@threads) {
-		$_->join;
-	}
+	my $grid_runner = new HPC::GridRunner($conf, "$msg.htc_cache_success");
+    my $ret = $grid_runner->run_on_grid(@$commands);
+    if ($ret) {
+        die "Error, not all $msg commands completed successfully.  Cannot continue.\n";
+    }
 	my $end_time = time();
 	print "CMD finished : $msg (" . ($end_time - $start_time) . " seconds)\n";
 }
@@ -321,43 +415,56 @@ sub process_cmd {
 #	and here
 #	https://wiki.bc.net/atl-conf/pages/viewpage.action?pageId=20548191
 
-sub system_call {
-#	my $cmd=shift;
-#	system("date");
-#	print "$cmd\n";
-#	system($cmd);           # || use @_ instead of $cmd if not collecting to variable
-
-	my @cmd=@_;     # $cmd[0] is the command $cmd[1] is the message
-	#print "$cmd[0]------1\n$cmd[1]------2\n";
-	system("date >> $cmd[1].log 2>&1");
-	open (MYFILE, '>>', "$cmd[1].log");
-	print MYFILE "$cmd[0]\n";
-	system("$cmd[0] >> $cmd[1].log 2>&1");           # || use @_ instead of $cmd if not collecting to variable
-
-}
-
 #########################
 ###MAIN##################
 #########################
 sub main() {
-#	http://search.cpan.org/~szabgab/Parallel-ForkManager-1.03/lib/Parallel/ForkManager.pm
+
+	# Check that the environment have the executable variables
+	my @tools = qw (leaff interproscan.sh java blastall parse_interproscan_tsv parse_blast2go_annot parse_combined_interproscan_blast2go parse_compareIDs_input_interproscan_blast2go);
+	foreach my $tool (@tools) {
+		my $tool_path = qx(which $tool);
+		chomp ($tool_path);
+		die "\n## Fatal error: No '$tool' command available in the env PATH. Please make sure you have the executables before executing the pipeline\n" unless ( $tool_path );
+	}
+
+	# http://search.cpan.org/~szabgab/Parallel-ForkManager-1.03/lib/Parallel/ForkManager.pm
 	Parallel::ForkManager->import(); ## added new 06/12/2013
 	my $pm = Parallel::ForkManager->new($THREADS_NUM);
 	{
 		$pm->start and next; # do the fork
-		&leaff();				# Run leaff
+		&leaff($input);				# Run leaff
 		$pm->finish; # do the exit in the child process
 	}
 	$pm->wait_all_children;
 	#print "Done! Splitting fasta\n";
 
-#	http://perldoc.perl.org/threads.html
-	my $thr1 = threads->create('interproscanRC2');
-	my $thr2 = threads->create('blast2go');
-	$thr1->join;
-	$thr2->join;
-	#print("Done! Interproscan and Blast2GO_blast\n");
-	
+	my $main_pm = Parallel::ForkManager->new($THREADS_NUM);
+	$main_pm->run_on_start(
+		sub { my ($pid,$ident)=@_;
+		# print "** $ident started, pid: $pid\n";
+		&interproscan;
+		}
+	);
+
+	# get it's exit code
+	$main_pm->run_on_finish(
+		sub { my ($pid, $exit_code, $ident) = @_;
+		# print "** $ident just got out of the pool with PID $pid and exit code: $exit_code\n";
+		&blast2go;
+		}
+	);
+
+	{
+		my $pid = $main_pm->start("BLASTP") and next; # do the fork
+		&blastp;
+		$main_pm->finish; # do the exit in the child process
+	}
+	print STDERR "Waiting for Children...\n";
+	$main_pm->wait_all_children;
+	print STDERR "Everybody is out of the pool!\n";
+
+
 	my $pm2 = Parallel::ForkManager->new($THREADS_NUM);
 	{
 		$pm2->start and next; # do the fork
@@ -367,16 +474,46 @@ sub main() {
 	$pm2->wait_all_children;
 	#print "Done! Parsing\n";
 
+
+	# Clean directories
+	print "\n";
+	print "#######################################\n";
+	print "##    Clean the output directory\n";
+	print "#######################################\n";
+	my @list=();
+	# http://stackoverflow.com/questions/11653762/check-for-existence-of-directory-in-perl-with-wildcard
+	@list = `ls -d $pwd/farmit.*` if (grep -d, glob "$pwd/farmit.*");
+	push (@list, `ls -d $pwd/temp`) if (-d "$pwd/temp");
+	chomp @list;
+	if (@list){
+		foreach my $dir (@list) {
+			print $dir,"\n";
+			remove_tree($dir);
+		}
+	}
+
+
 	print "\n\n";
 	print "#################################################################\n";
-    print "The Functional annotation files are below:\n$pwd/$input-annotation.tsv\n";
-    print "\nRaw Interproscan result can be found here:\n";
-    print " -	TSV format : $pwd/combined_$input.iprscan.tsv\n";
-    print " -	XML format : $pwd/combined_$input.iprscan.xml\n";
-    print " -	GFF3 format : $pwd/combined_$input.iprscan.gff3\n";
-    print "\nRaw Blast xml ouput file used for Blast2GO can be found here:\n$pwd/combined_$input.blastpForBlast2GO.xml\n";
-    print "\nRaw Blast2GO results can be found here:\n$pwd/blast2go/combined_$input.blastpForBlast2GO.xml.blast2go*\n";
+	print "#################################################################\n";
+	print "#################################################################\n";
+    print "The functional annotation files are below:\n";
+    print "\nAnnotF output:\n";
+    print " -	TSV format : $pwd/$input.annotF-annotation.tsv\n";
+    print "\nRaw InterProScan v5.22-61.0 result can be found here:\n";
+    print " -	TSV format : $pwd/$input.interproscan.tsv\n";
+    print " -	XML format : $pwd/$input.interproscan.xml\n";
+    print " -	GFF3 format : $pwd/$input.interproscan.gff3\n";
+    print "\nRaw Blast xml ouput file used for Blast2GO can be found here:\n";
+    print " -	XML format : $pwd/$input.blastp.xml\n";
+    print "\nRaw Blast2GO v2.5.0 (Database 30Jan2017) results can be found here:\n";
+    print " -	$blast2go_dir/$input.blast2go*\n";
     print "#################################################################\n";
+    print "#################################################################\n";
+    print "#################################################################\n";
+
+
+
 	exit;
 }
 main();
