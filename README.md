@@ -6,7 +6,10 @@ executes jobs in parallel and it provide users a consolidated tab-delimited outp
 individual tools output.
 
 ## Directed acyclic graph (DAG)
+
 The below graph explains the basic workflow 
+
+![alt text](https://github.com/gemygk/AnnotF/blob/master/images/AnnotF.smk.17Apr2019.svg)
 
 ## Requirements
 ```
