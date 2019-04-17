@@ -19,8 +19,7 @@ interproscan-5.22.61 - https://www.ebi.ac.uk/about/news/service-news/InterPro-61
 ```
 
 ## Run AnnotF
-AnnotF requires only one mandatory argument. The query peptide file.
-Eg: An example protein fasta file is below:
+AnnotF requires only one mandatory argument. The query peptide file, for example a protein fasta file is below:
 
 CAUTION: 
 Only fasta header should be present and no pipe ("|") allowed in fasta header as it will cause issues with InterproScan.
