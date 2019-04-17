@@ -14,7 +14,8 @@ The below graph explains the basic workflow
 ## Requirements
 ```
 perl > 5.16.0
-  Parallel::ForkManager
+  Parallel::ForkManager - https://metacpan.org/pod/release/YANICK/Parallel-ForkManager-1.15/lib/Parallel/ForkManager.pm
+  HPC::GridRunner - https://github.com/HpcGridRunner/HpcGridRunner.github.io/wiki
 LEAFF - http://kmer.sourceforge.net/wiki/index.php/LEAFF_User%27s_Guide
 blast-2.2.22 - ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.2.22/
 blast2go-2.5.0 - https://www.blast2go.com/support/blog/22-blast2goblog/110-local-blast2go-database-installation
