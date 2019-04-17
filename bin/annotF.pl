@@ -5,11 +5,19 @@
 
 #	This script use packages : LEAFF, INTERPRO, BLAST2GO (including blastp)
 
-# 	Gemy George Kaithakottil (gemy.kaithakottil@tgac.ac.uk)
+# 	Version 1.01
+#	- Added XML,GFF3 interproscan output formats
+#	- Changed the blast database location from this /tgac/references/databases/blast/nr to this /tgac/public/databases/blast/ncbi/nr
+
 # 	Version 1.0
+#	- First release
+
+# AUTHOR: Gemy George Kaithakottil (Gemy.Kaithakottil@tgac.ac.uk || gemygk@gmail.com)
+
 
 use strict;
 use warnings;
+use File::Basename;
 use Parallel::ForkManager;
 use threads;
 #use Getopt::Long qw(:config no_ignore_case pass_through); 
@@ -21,51 +29,43 @@ my $input;
 my $num = 1000;
 my $queue = "Test128";
 my $help;
+my $prog = basename($0);
 
 my $usage = <<_EOUSAGE_;
 
-
 #########################################################################################################
 #
-#   annotF (v1.0) is a functional annotation pipeline for the annotation of query proteins
-#   written by Gemy George Kaithakottil (gemy.kaithakottil\@tgac.ac.uk || gemygk\@gmail.com)
-#
-#
-#	Usage: $0 [options] --fasta <protein.fasta>
-#
+#    annotF (v1.01) is a functional annotation pipeline for the annotation of query proteins
+#   
+#        Usage: $prog [options] --fasta <protein.fasta>
 #
 #	Required:
-#	
-#	--fasta <string>		fasta file properly formatted (without any "dots" in sequences or "newlines")
-#
+#	--fasta <string>		fasta file properly formatted 
+#					(without any "dots" in sequences or "empty/blank lines")
 #
 #	General Options:
-#
 #	--chunk_size <int>		required chunk size (fasta per file) for faster execution of jobs
 #					ideal chunk size would be 1000
 #					(default: $num fasta sequences per file)
-#
 #	--queue <string>		queue to submit jobs (default: Test128)
-#
 #	--help				print this option menu and quit
 #							
-#	Example of a peptide fasta file:
-#	>A2YIW7
-#	MAAEEGVVIACHNKDEFDAQMTKAKEAGKVVIIDFTASWCGPCRFIAPVFAEYAKKFPGAVFLKVDVDELKEVAEKYNVE
-#	AMPTFLFIKDGAEADKVVGARKDDLQNTIVKHVGATAASASA
-#	>comp21620_c0_seq1
-#	MMGKGKVLVYHFLPSIFLVNITYYIYIYIYIYIFLYIHTYNYIHIYILLMASITGSAVSI
-#	SSFSCSFKLNQASARVSTLNSVPFSINGKSFPSIKLRPAQRFQVSCMAAKPETVEKVCGI
-#	VRKQLAIAADTEITGESKFAALGADSLDTVEIVMGLEEEFGISVEEESAQTIATVQDAAD
-#	LIEKLLA
+#    NOTE: 
+#    Only fasta header should be present for fasta sequence and no pipe ("|") allowed in fasta header
 #
-#	NOTE: Only fasta header should be present for fasta sequence and no pipe ("|") allowed in fasta header
+#    Example of a peptide fasta file:
+#    >A2YIW7
+#    MAAEEGVVIACHNKDEFDAQMTKAKEAGKVVIIDFTASWCGPCRFIAPVFAEYAKKFPGAVFLKVDVDELKEVAEKYNVE
+#    AMPTFLFIKDGAEADKVVGARKDDLQNTIVKHVGATAASASA
+#    >comp21620_c0_seq1
+#    MMGKGKVLVYHFLPSIFLVNITYYIYIYIYIYIFLYIHTYNYIHIYILLMASITGSAVSI
+#    SSFSCSFKLNQASARVSTLNSVPFSINGKSFPSIKLRPAQRFQVSCMAAKPETVEKVCGI
+#    VRKQLAIAADTEITGESKFAALGADSLDTVEIVMGLEEEFGISVEEESAQTIATVQDAAD
+#    LIEKLLA
 #
+# Contact : Gemy George Kaithakottil (gemy.kaithakottil\@tgac.ac.uk || gemygk\@gmail.com)
 #########################################################################################################
-
-
 _EOUSAGE_
-
     ;
 
 unless (@ARGV) {
@@ -89,13 +89,19 @@ if (@ARGV) {
 }
 
 unless ($input) {
-    die "$usage\n";
+    die "ERROR: No input fasta provided.\n$usage\n";
 }
 
 unless(-e $input) {
-		print "Cannot open $input\n$!\n";
+		print "ERROR: Cannot open $input\n$!\n";
 		exit;
 	}
+
+# v1.01 update
+# Link the protein file to the current location
+my $input_basename = basename($input);
+qx(ln -s $input .) unless (-e $input_basename);
+$input = $input_basename;
 
 #unless ($queue) {
 #    die "$usage\n";
@@ -119,8 +125,8 @@ my $THREADS_NUM = 1000; # http://bickson.blogspot.co.uk/2011/12/multicore-parser
 
 # Print version status:
 print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
-print "%%          annotF - v1.0 (Release:12-12-2013)          %%\n";
-print "%%   gemy.kaithakottil\@tgac.ac.uk || gemygk\@gmail.com   %%\n";
+print "%%          annotF - v1.01 (Release:05-Nov-2015)        %%\n";
+print "%%   Gemy.Kaithakottil\@tgac.ac.uk || gemygk\@gmail.com   %%\n";
 print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
 
 # Create directories
@@ -176,7 +182,7 @@ sub interproscanRC2() {
 	foreach (@files) {
 		my @input=split (/\//);
 		# Actual way to run the script
-		push(@commands,"bsub -q $queue -K -J iprscan5_$count -o $pwd/interproscan/out_interproscan_rc2_$input[$#input]-$count -n 8 -R \"span[ptile=8] rusage[mem=4096]\" \"source interproscan-5;interproscan.sh -i $_ -b $pwd/interproscan/$input[$#input]-interproscanRC2 -dp -goterms -iprlookup -pa -f TSV\"");
+		push(@commands,"bsub -q $queue -K -J iprscan5_$count -o $pwd/interproscan/out_interproscan_rc2_$input[$#input]-$count -n 8 -R \"span[ptile=8] rusage[mem=4096]\" \"source interproscan-5;interproscan.sh -i $_ -b $pwd/interproscan/$input[$#input]-interproscanRC2 -dp -goterms -iprlookup -pa -f TSV,XML,GFF3\""); # v1.01 udpate
 		# For the above one to be used I should fix phobius.pl for phobius -- done Fixed!
 		# ncoils for coils -- done Fixed!
 		# blastall for PIRSF, Panther, ProDom -- done Fixed!
@@ -192,7 +198,11 @@ sub interproscanRC2() {
 	# Now concatenate the results 
 	# add line to end of the file (http://www.thegeekstuff.com/2009/11/unix-sed-tutorial-append-insert-replace-and-count-file-lines/)
 	@commands=(); # empty the interproscan commands
-	push(@commands,"bsub -q $queue -K -J cat_interpro -o $pwd/interproscan/out_cat_interproscan \"cat $pwd/interproscan/$input*-interproscanRC2.tsv | sort -k1,1 | sed '\$ a END' > $pwd/combined_$input.iprscan.tsv\"");
+	# v1.01 update
+	push(@commands,"bsub -q $queue -K -J cat_interpro_tsv -o $pwd/interproscan/out_cat_interproscan_tsv \"cat $pwd/interproscan/$input*-interproscanRC2.tsv | sort -k1,1 | sed '\$ a END' > $pwd/combined_$input.iprscan.tsv\"");
+	push(@commands,"bsub -q $queue -K -J cat_interpro_xml -o $pwd/interproscan/out_cat_interproscan_xml \"cat $pwd/interproscan/$input*-interproscanRC2.xml > $pwd/combined_$input.iprscan.xml\"");
+	push(@commands,"bsub -q $queue -K -J cat_interpro_gff3 -o $pwd/interproscan/out_cat_interproscan_gff3 \"cat $pwd/interproscan/$input*-interproscanRC2.gff3 > $pwd/combined_$input.iprscan.gff3\"");
+
 	&process_cmd(\@commands,"INTERPROSCAN");
 	#print "Interproscan jobs executed!!\n";
 	return 1;
@@ -213,7 +223,7 @@ sub blast2go() {
 		# /data/references/databases/blast/nr -- old
 		
 		# For input peptides only "blastp"
-		push(@commands,"bsub -q $queue -K -J Blast2GOblastp_$count -o $pwd/blastpForBlast2go/out_blastpForBlast2GO_$input[$#input]-$count -n 4 -R \"span[ptile=4] rusage[mem=5120]\" \"source jre-7.11;source blast-2.2.22;blastall -p blastp -a 4 -d /tgac/references/databases/blast/nr -i $_ -e 1e-4 -b 50 -v 50 -m 7 -o $pwd/blastpForBlast2go/$input[$#input]-vs-nr_blastpForBlast2GO.xml\"");
+		push(@commands,"bsub -q $queue -K -J Blast2GOblastp_$count -o $pwd/blastpForBlast2go/out_blastpForBlast2GO_$input[$#input]-$count -n 4 -R \"span[ptile=4] rusage[mem=5120]\" \"source jre-7.11;source blast-2.2.22;blastall -p blastp -a 4 -d /tgac/public/databases/blast/ncbi/nr -i $_ -e 1e-4 -b 50 -v 50 -m 7 -o $pwd/blastpForBlast2go/$input[$#input]-vs-nr_blastpForBlast2GO.xml\"");	# v1.01 update to blast db location
 		$count++;
 	}
 	&process_cmd(\@commands,"BlastpForBlast2GO");
@@ -226,7 +236,7 @@ sub blast2go() {
 
 	@commands=(); # empty the cat commands
 	if(!-e "$pwd/combined_$input.blastpForBlast2GO.xml"){
-		print  "Exiting .. blastpForBlast2GO didn't generate any output for Blast2GO\n";
+		die "Exiting .. blastpForBlast2GO didn't generate any output for Blast2GO\n";
 		exit;
 	}
 	else {
@@ -360,7 +370,10 @@ sub main() {
 	print "\n\n";
 	print "#################################################################\n";
     print "The Functional annotation files are below:\n$pwd/$input-annotation.tsv\n";
-    print "\nRaw Interproscan result can be found here:\n$pwd/combined_$input.iprscan.tsv\n";
+    print "\nRaw Interproscan result can be found here:\n";
+    print " -	TSV format : $pwd/combined_$input.iprscan.tsv\n";
+    print " -	XML format : $pwd/combined_$input.iprscan.xml\n";
+    print " -	GFF3 format : $pwd/combined_$input.iprscan.gff3\n";
     print "\nRaw Blast xml ouput file used for Blast2GO can be found here:\n$pwd/combined_$input.blastpForBlast2GO.xml\n";
     print "\nRaw Blast2GO results can be found here:\n$pwd/blast2go/combined_$input.blastpForBlast2GO.xml.blast2go*\n";
     print "#################################################################\n";

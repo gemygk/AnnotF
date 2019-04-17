@@ -144,7 +144,14 @@ while (<$inf>) {
 
 		#print "$id\t$go_ipr\t$ec_iprid\t$godesc_iprdesc\t$nec_iprid\t$niprdesc\t$niprgo\t$npathways\n";
 		local $"="|";
-		print "$id\t@blast2go_goA\t$ec_iprid\t$godesc_iprdesc\t@iprscan_iprA\t@iprscan_iprdescA\t@iprscan_goA\t@iprscan_ecA\t$npathways\n";
+
+    # Was working as well, but without NULL for interproscan EC column field
+		#print "$id\t@blast2go_goA\t$ec_iprid\t$godesc_iprdesc\t@iprscan_iprA\t@iprscan_iprdescA\t@iprscan_goA\t@iprscan_ecA\t$npathways\n";
+
+    # Check if interproscan EC number is NULL or not
+    print "$id\t@blast2go_goA\t$ec_iprid\t$godesc_iprdesc\t@iprscan_iprA\t@iprscan_iprdescA\t@iprscan_goA\t", scalar(@iprscan_ecA) == "" ? "NULL" : "@iprscan_ecA", "\t$npathways\n";
+
+
 		local $"=" ";
 		(@blast2go_go,@iprscan_ipr, @iprscan_go,@iprscan_iprdesc,@iprscan_path)=();
 		(%blast2go_goH,%iprscan_iprH,%iprscan_goH,%iprscan_iprdescH,%iprscan_pathH,%iprscan_ecH)=();
@@ -246,7 +253,13 @@ while (<$inf>) {
 					#print "$id\t$go_ipr\t$ec_iprid\t$godesc_iprdesc\t$iprdesc\t$gotag\t$iprgo\t$pathtag\t$pathways\t*mis*\n";
 					local $"="|";
 	                #print "$id\t@blast2go_goA\t$ec_iprid\t$godesc_iprdesc\t@iprscan_iprA\t@iprscan_iprdescA\t@iprscan_goA\t$pathways\n";
-	                print "$id\tNULL\tNULL\tNULL\t@iprscan_iprA\t@iprscan_iprdescA\t@iprscan_goA\t@iprscan_ecA\t$pathways\n";
+	                
+                  # Was working as well, but without NULL for interproscan EC column field
+                  #print "$id\tNULL\tNULL\tNULL\t@iprscan_iprA\t@iprscan_iprdescA\t@iprscan_goA\t@iprscan_ecA\t$pathways\n";
+
+                  # Check if interproscan EC number is NULL or not
+                  print "$id\tNULL\tNULL\tNULL\t@iprscan_iprA\t@iprscan_iprdescA\t@iprscan_goA\t", scalar(@iprscan_ecA) == "" ? "NULL" : "@iprscan_ecA", "\t$pathways\n";
+                  
 					#local $"=" ";
 					(@blast2go_go,@iprscan_ipr, @iprscan_go,@iprscan_iprdesc,@iprscan_path)=();
 					(%blast2go_goH,%iprscan_iprH,%iprscan_goH,%iprscan_iprdescH,%iprscan_pathH,%iprscan_ecH)=();
